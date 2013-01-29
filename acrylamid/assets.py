@@ -96,7 +96,7 @@ class Jinja2(HTML):
     """Transform HTML files using the Jinja2 markup language. You can inherit
     from all theme files in the theme directory."""
 
-    ext = '.html'
+    ext, target = ['.html', '.j2'], '.html'
 
     def __init__(self, conf, env):
         super(Jinja2, self).__init__(conf, env)
@@ -113,15 +113,21 @@ class Jinja2(HTML):
 
         return self.jinja2.fromfile(src).render(env=self.env, conf=self.conf)
 
+    def write(self, src, dest, force=False, dryrun=False):
+        dest = dest.replace(splitext(src)[-1], self.target)
+        return super(Jinja2, self).write(src, dest, force=force, dryrun=dryrun)
+
     def shutdown(self):
-        shutil.rmtree(self.path)
+        pass
+        # shutil.rmtree(self.path)
 
 
 class System(Writer):
 
     def write(self, src, dest, force=False, dryrun=False):
 
-        dest = dest.replace(self.ext, self.target)
+        dest = dest.replace(splitext(src)[-1], self.target)
+
         if not force and isfile(dest) and getmtime(dest) > getmtime(src):
             return event.skip(ns, dest)
 
@@ -185,7 +191,7 @@ class CoffeeScript(System):
 
 class IcedCoffeeScript(System):
 
-    ext, target = '.iced', '.js'
+    ext, target = ['.iced', '.coffee'], '.js'
     cmd = ['iced', '-cp']
 
 
@@ -205,7 +211,6 @@ def worker(conf, env, args):
     for path in writer.filter(items, directory):
         src, dest = join(directory, path), join(conf['output_dir'], path)
         writer.write(src, dest, force=env.options.force, dryrun=env.options.dryrun)
-
     writer.shutdown()
 
 
@@ -217,9 +222,12 @@ def compile(conf, env):
     global __writers, __default
 
     files = defaultdict(set)
-    __writers = dict((cls.ext, cls) for cls in (
-        globals()[writer](conf, env) for writer in conf.static_filter
-    ))
+    for cls in [globals()[writer](conf, env) for writer in conf.static_filter]:
+        if isinstance(cls.ext, list):
+            for ext in cls.ext:
+                __writers[ext] = cls
+        else:
+            __writers[cls.ext] = cls
 
     for path, directory in relfilelist(conf['theme'], conf['theme_ignore'], env.engine.templates):
         files[(splitext(path)[1], directory)].add(path)
