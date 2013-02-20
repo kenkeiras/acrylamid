@@ -106,9 +106,16 @@ class Environment(AbstractEnvironment):
     def fromfile(self, path):
         return Template(self.jinja2.get_template(path))
 
+    def extend(self, path):
+        self.jinja2.loader.searchpath.append(path)
+
     @property
     def templates(self):
         return self.jinja2.loader.used
+
+    @property
+    def extension(self):
+        return ['.html', '.j2']
 
 
 class Template(AbstractTemplate):
