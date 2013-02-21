@@ -1,6 +1,6 @@
 # -*- encoding: utf-8 -*-
 #
-# Copyright 2012 Martin Zimmermann <info@posativ.org>. All rights reserved.
+# Copyright 2013 Martin Zimmermann <info@posativ.org>. All rights reserved.
 # License: BSD Style, 2 clauses -- see LICENSE.
 
 import os
@@ -97,7 +97,6 @@ class Template(HTML):
 
     def __init__(self, conf, env):
         map(env.engine.extend, conf['static'])
-        print env.engine.mako.directories
         super(Template, self).__init__(conf, env)
 
     def generate(self, src, dest):
@@ -191,7 +190,7 @@ class IcedCoffeeScript(System):
 def worker(conf, env, args):
     """Compile each file extension for each folder in its own process.
     """
-    ext, directory, items = args[0][0], args[0][1], args[1]
+    (ext, directory), items = args[0], args[1]
     writer = __writers.get(ext, __defaultwriter)
 
     for path in writer.filter(items, directory):
