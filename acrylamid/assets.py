@@ -11,8 +11,9 @@ import stat
 
 from tempfile import mkstemp
 from functools import partial
+from itertools import chain
 from collections import defaultdict
-from os.path import join, isfile, getmtime, split, splitext
+from os.path import join, isfile, getmtime, split, splitext, dirname
 
 from acrylamid import core, helpers, log
 from acrylamid.errors import AcrylamidException
@@ -26,8 +27,19 @@ __defaultwriter = None
 
 
 class Writer(object):
-    """A 'open-file-and-write-to-dest' writer.  Only operates if the source
-    file has been modified or the destination does not exists."""
+    """A 'open-file-and-write-to-dest' writer.  Only updates the destination
+    if the source has been a newer modication timestamp or the destination does
+    not yet exist.
+
+    .. attribute:: uses
+
+        You can define a `uses` regular expression to automagically omit
+        imports/includes within a master file from the output.  Acrylamid will
+        also check for the modification timestamps of these referenced item
+        and trigger recompilation for the master file.
+
+        Note, that Acrylamid only supports imports/includes up to a depth of six.
+    """
 
     uses = None
 
@@ -36,37 +48,46 @@ class Writer(object):
         self.env = env
 
     def filter(self, input, directory):
-        """Filter input set for includes and imports using `uses` pattern.
-        The pattern must include a group 'file' that holds the included item.
-        If the pattern is the empty string (the default), return input.
+        # remove referenced items from any file from input
+        return input - set(chain(*chain(map(partial(self.includesfor, directory), input))))
 
-        Note, that Acrylamid will only read the first 512 bytes of a file
-        to check for includes. Therefore, do not move your includes to the
-        end of file."""
+    def includesfor(self, directory, path):
 
         if not self.uses:
-            return input
+            return set()
 
-        imports = set()
-        for path in input:
-            with io.open(join(directory, path)) as fp:
-                text = fp.read(512)
+        with io.open(join(directory, path)) as fp:
+            return set(join(dirname(path), m.group('file')) for m in
+                re.finditer(self.uses, fp.read(512), re.MULTILINE))
 
-            for m in re.finditer(self.uses, text, re.MULTILINE):
-                imports.add(m.group('file'))
+    def modified(self, (directory, path), dest):
 
-        return input.difference(imports)
+        mtime = -1
+        maxdepth = 6
 
-    def modified(self, src, dest):
-        return not isfile(dest) or getmtime(src) > getmtime(dest)
+        # shortcut to getmtime for directory
+        f = lambda p: getmtime(join(directory, p))
+
+        # start with the actual file
+        includes = [path]
+
+        while maxdepth > 0:
+
+            includes = sum((list(self.includesfor(directory, p)) for p in includes), [])
+            mtime = max(max(map(f, chain(includes, [path]))), mtime)
+
+            maxdepth -= 1
+
+        return not isfile(dest) or mtime > getmtime(dest)
 
     def generate(self, src, dest):
         return io.open(src, 'rb')
 
-    def write(self, src, dest, force=False, dryrun=False):
-        if not force and not self.modified(src, dest):
+    def write(self, (directory, path), dest, force=False, dryrun=False):
+        if not force and not self.modified((directory, path), dest):
             return event.skip(ns, dest)
 
+        src = join(directory, path)
         mkfile(self.generate(src, dest), dest, ns=ns, force=force, dryrun=dryrun)
 
     def shutdown(self):
@@ -78,12 +99,12 @@ class HTML(Writer):
 
     ext = '.html'
 
-    def write(self, src, dest, **kw):
+    def write(self, (directory, path), dest, force=False, dryrun=False):
 
-        if src.startswith(self.conf['theme'].rstrip('/') + '/'):
+        if directory == self.conf['theme']:
             return
 
-        return super(HTML, self).write(src, dest, **kw)
+        return super(HTML, self).write((directory, path), dest, force, dryrun)
 
 
 class XML(HTML):
@@ -103,9 +124,9 @@ class Template(HTML):
         relpath = split(src[::-1])[0][::-1]  # (head, tail) but reversed behavior
         return self.env.engine.fromfile(relpath).render(env=self.env, conf=self.conf)
 
-    def write(self, src, dest, force=False, dryrun=False):
-        dest = dest.replace(splitext(src)[-1], self.target)
-        return super(Template, self).write(src, dest, force=force, dryrun=dryrun)
+    def write(self, (directory, path), dest, force=False, dryrun=False):
+        dest = dest.replace(splitext(path)[-1], self.target)
+        return super(Template, self).write((directory, path), dest, force, dryrun)
 
     @property
     def ext(self):
@@ -116,11 +137,12 @@ class Template(HTML):
 
 class System(Writer):
 
-    def write(self, src, dest, force=False, dryrun=False):
+    def write(self, (directory, path), dest, force=False, dryrun=False):
 
+        src = join(directory, path)
         dest = dest.replace(splitext(src)[-1], self.target)
 
-        if not force and isfile(dest) and getmtime(dest) > getmtime(src):
+        if not force and not self.modified((directory, path), dest):
             return event.skip(ns, dest)
 
         if isinstance(self.cmd, basestring):
@@ -194,8 +216,8 @@ def worker(conf, env, args):
     writer = __writers.get(ext, __defaultwriter)
 
     for path in writer.filter(items, directory):
-        src, dest = join(directory, path), join(conf['output_dir'], path)
-        writer.write(src, dest, force=env.options.force, dryrun=env.options.dryrun)
+        writer.write((directory, path), join(conf['output_dir'], path),
+            force=env.options.force, dryrun=env.options.dryrun)
     writer.shutdown()
 
 
@@ -216,10 +238,10 @@ def compile(conf, env):
         else:
             __writers[cls.ext] = cls
 
-    for path, directory in relfilelist(conf['theme'], conf['theme_ignore'], env.engine.templates):
-        files[(splitext(path)[1], directory)].add(path)
+    theme = relfilelist(conf['theme'], conf['theme_ignore'], env.engine.templates)
+    static = relfilelist(conf['static'], conf['static_ignore'])
 
-    for path, directory in relfilelist(conf['static'], conf['static_ignore']):
+    for path, directory in chain(theme, static):
         files[(splitext(path)[1], directory)].add(path)
 
     map(partial(worker, conf, env), files.iteritems())
