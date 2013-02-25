@@ -162,8 +162,8 @@ class SCSS(System):
     ext, target = '.scss', '.css'
     cmd = ['sass', '--scss']
 
-    # matches @import 'foo.scss', we do not support import 'foo'; or url(foo);
-    uses = r'^@import ["\'](?P<file>.+?\.scss)["\'];'
+    # matches @import 'foo.scss' / 'foo', we do not support import url(foo);
+    uses = r'^@import ["\'](?P<file>.+?(\.scss)?)["\'];'
 
 
 class LESS(System):
@@ -172,7 +172,7 @@ class LESS(System):
     cmd = ['lessc', ]
 
     # matches @import 'foo.less'; and @import-once ...
-    uses = r'^@import(-once)? ["\'](?P<file>.+?\.less)["\'];'
+    uses = r'^@import(-once)? ["\'](?P<file>.+?(\.(less|css))?)["\'];'
 
 
 class CoffeeScript(System):
